@@ -131,6 +131,12 @@ arrives, the callee spends inside it, reports are cumulative, the caller
 books once, three concurrent delegations from one orchestrator add up.
 `examples/a2a_delegation.py` is the same flow as a script.
 
+## pydantic-ai
+
+[pydantic-ai.md](pydantic-ai.md): a model wrapper that reserves and settles
+every request on `current_budget()`, and a delegation tool that runs each
+sub-agent in a child scope, so parallel delegates share one USD cap.
+
 ## Interop with llm-budget (Rust)
 
 [llm-budget](https://crates.io/crates/llm-budget) 0.8 has the same scopes

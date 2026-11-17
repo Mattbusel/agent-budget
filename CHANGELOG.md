@@ -17,6 +17,7 @@ The first version meant for PyPI; 0.1.0 was never uploaded.
 - `BudgetClientPlugin(per_call_usd=..., per_call_fraction=...)` opens a child scope for each call, sends that slice and closes it when the call ends, so parallel calls from one root budget are no longer each told the same remainder.
 - `cap_reports=True` on `BudgetClientPlugin` and `BudgetClientInterceptor`, and `IncurredBooker(cap_nanos=...)` / `IncurredBooker.capped_at(scope)` with `excess_nanos`: book at most what the callee was given and flag the rest.
 - `BudgetClientInterceptor` takes `deadline` and `token_limit`, like the plugin.
+- `docs/pydantic-ai.md` and `examples/pydantic_ai_delegation.py`: a USD cap across parallel pydantic-ai delegates (a `WrapperModel` that reserves and settles every request, and a delegation tool that runs the sub-agent in a child scope), run offline in CI.
 - `tests/test_hardening.py` and new cases in `tests/test_a2a_plugin.py` for each fix; the shared fixtures gain oversized JSON-number amounts, counts given under both names and an exact large whole-number amount.
 
 ## [0.1.0] - 2026-11-17
