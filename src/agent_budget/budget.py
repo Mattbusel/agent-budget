@@ -20,14 +20,19 @@ from __future__ import annotations
 
 import contextvars
 import threading
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
-from ._money import AmountError, nanos_to_usd, usd_to_nanos
+from ._money import MAX_NANOS, AmountError, nanos_to_usd, usd_to_nanos
 
 DEFAULT_MAX_DEPTH = 8
 
 _current: contextvars.ContextVar[Optional["Budget"]] = contextvars.ContextVar("agent_budget_current", default=None)
+# The ``with`` entries open in this context (thread or asyncio task), innermost
+# last. Kept per context, not on the budget, so one budget can be entered by
+# many tasks and threads at once.
+_entries: contextvars.ContextVar[tuple] = contextvars.ContextVar("agent_budget_entries", default=())
 
 
 def current_budget() -> Optional["Budget"]:
@@ -129,6 +134,14 @@ class Budget:
         self._init(name, limit, None, 0, max_depth, threading.RLock())
 
     @classmethod
+    def _empty(cls, name: str) -> "Budget":
+        """A budget of $0: refuses every reservation and child above $0, and
+        still books spend that already happened (``charge_force``)."""
+        obj = Budget.__new__(Budget)
+        obj._init(name, 0, None, 0, DEFAULT_MAX_DEPTH, threading.RLock())
+        return obj
+
+    @classmethod
     def _from_nanos(cls, name: str, limit: int, parent: "Budget", depth: int) -> "Scope":
         obj = Scope.__new__(Scope)
         obj._init(name, limit, parent, depth, parent.max_depth, parent._lock)
@@ -148,7 +161,6 @@ class Budget:
         self.depth = depth
         self.max_depth = max_depth
         self._lock = lock
-        self._tokens: list[contextvars.Token] = []
 
     # ── reading ──────────────────────────────────────────────────────────
     @property
@@ -192,6 +204,8 @@ class Budget:
     @property
     def utilization(self) -> float:
         with self._lock:
+            if self._limit == 0:
+                return 1.0
             return self._committed / self._limit
 
     @property
@@ -294,7 +308,12 @@ class Budget:
     def charge_force(self, cost_usd: float) -> Outcome:
         """Book spend that already happened, whatever the cap or the kill
         switch say."""
-        nanos = usd_to_nanos(cost_usd)
+        return self._charge_force_nanos(usd_to_nanos(cost_usd))
+
+    def _charge_force_nanos(self, nanos: int) -> Outcome:
+        """:meth:`charge_force` in nano-units, saturating at the largest
+        amount the wire format carries (as llm-budget's counters do)."""
+        nanos = max(0, min(int(nanos), MAX_NANOS))
         with self._lock:
             self._book(0, nanos)
             return self._outcome(nanos)
@@ -351,11 +370,24 @@ class Budget:
 
     # ── context ──────────────────────────────────────────────────────────
     def __enter__(self) -> "Budget":
-        self._tokens.append(_current.set(self))
+        token = _current.set(self)
+        _entries.set(_entries.get() + ((self, token),))
         return self
 
     def __exit__(self, *exc) -> None:
-        _current.reset(self._tokens.pop())
+        entries = _entries.get()
+        for i in range(len(entries) - 1, -1, -1):
+            if entries[i][0] is self:
+                token = entries[i][1]
+                _entries.set(entries[:i] + entries[i + 1:])
+                try:
+                    _current.reset(token)
+                except ValueError:
+                    # Exited in a context copied from the one it was entered
+                    # in: restore what was current before the entry.
+                    old = token.old_value
+                    _current.set(None if old is contextvars.Token.MISSING else old)
+                return
 
     def __repr__(self) -> str:
         return (
@@ -404,6 +436,22 @@ class Scope(Budget):
             self.close()
         finally:
             super().__exit__(*exc)
+
+    def __del__(self) -> None:
+        # Like dropping a Rust ScopeGuard: a scope nobody closed refunds its
+        # unused hold when it is collected. Holds still taken by open
+        # reservations keep the scope alive, so they are never cut short.
+        try:
+            if not self._closed and self._parent is not None:
+                self.close()
+                warnings.warn(
+                    f"budget scope {self.name!r} was never closed; closed when collected. "
+                    "Use `with budget.child(...)` or call close().",
+                    ResourceWarning,
+                    stacklevel=2,
+                )
+        except Exception:  # pragma: no cover - interpreter shutdown, or warnings as errors
+            pass
 
 
 class Reservation:

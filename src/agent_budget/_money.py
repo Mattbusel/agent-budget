@@ -17,6 +17,9 @@ from decimal import Decimal, InvalidOperation
 NANOS_PER_UNIT = 1_000_000_000
 MAX_NANOS = 2**64 - 1
 
+_MAX_UNITS_FLOAT = MAX_NANOS / NANOS_PER_UNIT
+_MAX_UNITS_DECIMAL = Decimal(MAX_NANOS) / NANOS_PER_UNIT + 1
+
 _DECIMAL = re.compile(r"\A([0-9]{1,20})(?:\.([0-9]{1,9}))?\Z")
 _CURRENCY = re.compile(r"\A[A-Z]{3}\Z")
 
@@ -33,17 +36,30 @@ def usd_to_nanos(usd: float | int | Decimal) -> int:
     """
     if isinstance(usd, bool):
         raise AmountError("an amount cannot be a boolean")
-    if isinstance(usd, Decimal):
+    if isinstance(usd, int):
+        # Exact, like llm-budget reading a JSON integer: no trip through float.
+        if usd < 0:
+            raise AmountError(f"amount must be >= 0, got {usd}")
+        nanos = usd * NANOS_PER_UNIT
+    elif isinstance(usd, Decimal):
         if not usd.is_finite() or usd < 0:
             raise AmountError(f"amount must be a finite number >= 0, got {usd}")
+        if usd > _MAX_UNITS_DECIMAL:
+            raise AmountError(f"amount too large: {usd}")
         nanos = int((usd * NANOS_PER_UNIT).to_integral_value(rounding="ROUND_HALF_UP"))
     else:
-        x = float(usd)
+        try:
+            x = float(usd)
+        except (TypeError, ValueError, OverflowError) as e:
+            raise AmountError(f"not an amount: {usd!r}") from e
         if not math.isfinite(x) or x < 0:
             raise AmountError(f"amount must be a finite number >= 0, got {usd!r}")
+        if x > _MAX_UNITS_FLOAT:
+            # Checked before multiplying: 1e300 * 1e9 is infinite.
+            raise AmountError(f"amount too large: {usd!r}")
         nanos = math.floor(x * NANOS_PER_UNIT + 0.5)
     if nanos > MAX_NANOS:
-        raise AmountError(f"amount too large: {usd}")
+        raise AmountError(f"amount too large: {usd!r}")
     return nanos
 
 

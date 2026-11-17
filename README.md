@@ -14,6 +14,9 @@ pip install agent-budget            # no dependencies
 pip install "agent-budget[a2a]"     # plus the a2a-python plugins
 ```
 
+Until the first upload reaches PyPI, install from GitHub:
+`pip install "agent-budget[a2a] @ git+https://github.com/Mattbusel/agent-budget"`.
+
 ## Child scopes
 
 ```python
@@ -42,7 +45,8 @@ print(orchestrator.remaining_usd)        # 0.938: the unused slice came back on 
 - `own_cost_usd` + `child_cost_usd` == `spent_usd` on every scope.
 - Thread-safe (one lock per tree) and safe in asyncio tasks;
   `current_budget()` is the innermost scope entered with `with` in the
-  current thread or task.
+  current thread or task. One budget can be entered by many threads and
+  tasks at once.
 
 ## Across agents: A2A, W3C baggage, MCP
 

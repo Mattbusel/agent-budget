@@ -33,7 +33,9 @@ gets its slice, the other is refused before it spends anything).
    out of the child's hold.
 5. Closing a child (`with` exit, `close()`) stops new work in it and its
    subtree (`ScopeClosed`) and refunds the part of its hold no in-flight call
-   needs.
+   needs. A scope nobody closed is closed when it is garbage-collected (like
+   dropping llm-budget's `ScopeGuard`), with a `ResourceWarning`; an open
+   reservation keeps its scope alive, so its hold is never cut short.
 6. `kill(reason)` stops a scope and its subtree (`BudgetKilled`).
 7. Depth is capped (`max_depth`, default 8; `DepthExceeded`).
 
@@ -75,7 +77,10 @@ Hypothesis property test over random scope trees.
   must not include nested operations.
 - Absent is not zero: what was not measured is left out.
 - Reports are cumulative; `IncurredBooker` books only their growth, so a
-  resent final task is not booked twice.
+  resent final task is not booked twice. `IncurredBooker.capped_at(scope)`
+  books at most what the scope holds and keeps the rest in `excess_nanos`.
+  Amounts saturate at the largest the wire carries; a report never makes
+  `book` raise.
 
 ### W3C baggage and MCP
 
@@ -89,24 +94,36 @@ MCP reserves `params._meta.baggage` for W3C baggage (SEP-414), so
 `inject_mcp_meta(meta, ctx)` on the client and `extract_mcp_meta(meta)` on
 the server carry a budget into any MCP tool call without an MCP change.
 Readers reject malformed input with `ContextError` (and never anything else:
-`tests/test_carriers.py` fuzzes them with Hypothesis).
+`tests/test_carriers.py` and `tests/test_hardening.py` fuzz them with
+Hypothesis, including floats up to `1e308` and integers of hundreds of
+digits). JSON integer amounts are read exactly, as llm-budget reads them.
 
 ## a2a-python
 
 `agent_budget.a2a_plugin` (install the `a2a` extra; a2a-sdk 1.3+):
 
-- `BudgetClientPlugin`: for `send_message` / `send_message_streaming`
-  calls made while a scope is current (or with a fixed `budget=`), writes the
-  outbound context into the request metadata, asks for the extension in
-  `A2A-Extensions`, and books each reply's `incurred` on the scope.
+- `BudgetClientPlugin(budget=None, deadline=None, token_limit=None,
+  per_call_usd=None, per_call_fraction=None, cap_reports=False)`: for
+  `send_message` / `send_message_streaming` calls made while a scope is
+  current (or with a fixed `budget=`), writes the outbound context into the
+  request metadata, asks for the extension in `A2A-Extensions`, and books
+  each reply's `incurred` on the scope. Without a per-call slice, parallel
+  calls from one budget are each told the same remainder: open a child
+  scope per delegation, or set `per_call_usd` / `per_call_fraction` and the
+  plugin opens a child scope for each call and closes it when the call
+  ends (a slice that does not fit raises `BudgetExhausted` and the call is
+  not sent). `cap_reports=True` books at most what the call's scope holds.
 - `BudgetExecutionPlugin(default_usd=None, max_usd=None, source="local")`:
   reads the budget from the request (request metadata first, then message
   metadata), opens a `Budget` of that amount (capped by `max_usd`; requests
-  without one get `default_usd` or no budget), makes it `current_budget()`
+  without one get `default_usd` or no budget; a grant of $0 is a $0 budget
+  that refuses every reservation, and a budget in a currency other than USD
+  is logged and treated as $0), makes it `current_budget()`
   inside `AgentExecutor.execute`, and stamps the cumulative `incurred`
   report on every task, status update and message the agent emits.
-- `BudgetClientInterceptor`: the client half for code that passes
-  interceptors to `ClientFactory.create`.
+- `BudgetClientInterceptor(budget=None, deadline=None, token_limit=None,
+  cap_reports=False)`: the client half for code that passes interceptors to
+  `ClientFactory.create`. Per-call slices need the plugin API.
 
 `tests/test_a2a_plugin.py` runs all of this over real JSON-RPC and HTTP+JSON
 transports (Starlette in-process): the budget arrives, the extension header

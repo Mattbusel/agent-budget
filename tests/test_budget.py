@@ -39,10 +39,14 @@ def test_child_reserves_and_refunds():
 def test_fraction_is_of_what_is_left():
     r = Budget(1.0)
     r.charge_force(0.2)
-    assert near(r.child("c", fraction=0.5).limit_usd, 0.4)
-    assert near(r.child("d", fraction=1.0).limit_usd, 0.4)
+    c = r.child("c", fraction=0.5)
+    assert near(c.limit_usd, 0.4)
+    d = r.child("d", fraction=1.0)
+    assert near(d.limit_usd, 0.4)
     with pytest.raises(BudgetExhausted):
         r.child("e", fraction=0.5)
+    c.close()
+    d.close()
 
 
 @pytest.mark.parametrize("kw", [dict(usd=0), dict(usd=-1), dict(usd=float("nan")), dict(fraction=0), dict(fraction=1.5), {}, dict(usd=1, fraction=0.5)])

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-budget"
-version = "0.1.0"
+version = "0.1.1"
 description = "Hard USD budgets for agents that delegate: reserve/settle child scopes for parallel sub-agents, and the A2A budget extension over A2A metadata, W3C baggage and MCP _meta"
 readme = "README.md"
 license = "MIT"

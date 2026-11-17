@@ -3,6 +3,7 @@ served in-process by Starlette): the caller's scope travels in the request,
 the callee runs inside a budget of exactly that, and the callee's reported
 cost is booked on the caller's scope once."""
 
+import asyncio
 import json
 
 import pytest
@@ -255,3 +256,105 @@ async def test_concurrent_delegations_from_one_orchestrator(transport):
     assert sum(r.spent_usd for r in receipts) == pytest.approx(orchestrator.spent_usd)
     assert orchestrator.spent_usd == pytest.approx(0.27)
     assert orchestrator.reserved_usd == 0
+
+
+# ── 0.1.1: untrusted metadata, $0 grants, per-call slices ────────────────────
+
+
+def _rc(payload, task_id="t-1"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(metadata={EXTENSION_URI: payload}, message=None, task_id=task_id)
+
+
+@pytest.mark.parametrize("amount", [1e300, 10**400, "18446744074", -1])
+def test_hostile_amounts_in_metadata_are_ignored(amount):
+    payload = {"budget": {"cost": {"amount": amount, "currency": "USD"}}}
+    assert read_context({EXTENSION_URI: payload}) is None
+    assert read_context({EXTENSION_URI: {"incurred": {"cost": {"amount": amount, "currency": "USD"}}}}) is None
+
+
+async def test_a_zero_grant_is_a_zero_budget_not_the_default():
+    plugin = BudgetExecutionPlugin(default_usd=5.0)
+    rc = _rc({"budget": {"cost": {"amount": "0", "currency": "USD"}}})
+    assert plugin._granted(rc) == 0.0
+    await plugin.before_execution(rc)
+    try:
+        b = plugin.budget_for(rc)
+        assert b is not None and b.limit_usd == 0
+        assert current_budget() is b
+        with pytest.raises(BudgetExhausted):
+            b.reserve(0.01)
+    finally:
+        await plugin.after_execution(rc, None)
+    assert current_budget() is None
+
+
+def test_a_budget_in_another_currency_fails_closed():
+    plugin = BudgetExecutionPlugin(default_usd=5.0)
+    assert plugin._granted(_rc({"budget": {"cost": {"amount": "1", "currency": "EUR"}}})) == 0.0
+    # No budget at all still gets the default.
+    assert plugin._granted(_rc({"incurred": {"cost": {"amount": "1", "currency": "USD"}}})) == 5.0
+
+
+def test_the_largest_valid_report_is_booked_not_raised():
+    from a2a.types.a2a_pb2 import Task
+
+    from agent_budget.a2a_plugin import _book_reports, _CallState
+
+    t = Task()
+    t.metadata.update({EXTENSION_URI: {"incurred": {
+        "cost": {"amount": "18446744073.709551615", "currency": "USD"},
+        "aggregatedChildCost": {"amount": "10000000000", "currency": "USD"},
+    }}})
+    scope = Budget(1.0)
+    _book_reports(_CallState(scope), t)
+    assert scope.spent_nanos == 2**64 - 1
+
+
+def test_cap_reports_books_at_most_the_reservation():
+    from a2a.types.a2a_pb2 import Task
+
+    from agent_budget.a2a_plugin import _book_reports, _CallState
+
+    t = Task()
+    t.metadata.update({EXTENSION_URI: {"incurred": {"cost": {"amount": "5", "currency": "USD"}}}})
+    root = Budget(1.0)
+    with root.child("remote", usd=0.10) as s:
+        _book_reports(_CallState(s, cap_reports=True), t)
+    assert root.spent_usd == pytest.approx(0.10)
+
+
+async def test_interceptor_passes_deadline_and_token_limit():
+    from types import SimpleNamespace
+
+    from agent_budget.a2a_plugin import BudgetClientInterceptor
+
+    icp = BudgetClientInterceptor(deadline="2026-12-01T00:00:00Z", token_limit=1000)
+    args = SimpleNamespace(method="send_message", input=request(), context=None)
+    with Budget(1.0).child("remote", usd=0.25):
+        await icp.before(args)
+    ctx = read_context(args.input.metadata)
+    assert ctx.budget.deadline == "2026-12-01T00:00:00Z"
+    assert ctx.budget.token_limit == 1000
+    assert ctx.budget.cost.nanos == 250_000_000
+
+
+async def test_per_call_slices_from_one_root(transport):
+    """With per_call_usd, parallel calls made straight from a root budget
+    each get their own slice; the one that does not fit is never sent."""
+    client, agent, _ = make(transport, BudgetClientPlugin(per_call_usd=0.10), BudgetExecutionPlugin())
+    orchestrator = Budget(0.30, name="orchestrator")
+
+    async def call(i):
+        return [e async for e in client.send_message(request(f"task {i}"))]
+
+    with orchestrator:
+        results = await asyncio.gather(*(call(i) for i in range(4)), return_exceptions=True)
+    await client.close()
+    refused = [r for r in results if isinstance(r, BaseException)]
+    assert len(refused) == 1 and isinstance(refused[0], BudgetExhausted)
+    assert sorted(agent.seen_budget) == [pytest.approx(0.10)] * 3
+    # Each callee made two $0.03 calls plus a third that fit in $0.04: $0.09 each.
+    assert orchestrator.spent_usd == pytest.approx(0.27)
+    assert orchestrator.reserved_usd == 0  # every per-call slice was closed

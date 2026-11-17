@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from ._money import AmountError, format_nanos, nanos_to_usd, parse_amount, parse_count, parse_currency
+from ._money import MAX_NANOS, AmountError, format_nanos, nanos_to_usd, parse_amount, parse_count, parse_currency
 
 EXTENSION_URI = "https://a2a-protocol.org/extensions/budget/v1"
 """The extension URI proposed in a2aproject/A2A#2121 (not yet reserved by the
@@ -131,6 +131,9 @@ class TokenCounts:
         d = _obj(d, where)
         kw = {}
         for attr, wire in cls._WIRE:
+            if attr != wire and wire in d and attr in d:
+                # llm-budget (serde) rejects a field given under both names.
+                raise ContextError(f"{where}.{wire} is given twice (as {wire} and {attr})")
             v = d.get(wire, d.get(attr))  # accept snake_case too
             if v is not None:
                 try:
@@ -206,7 +209,7 @@ class Incurred:
         """``cost`` plus ``aggregated_child_cost`` in ``currency``, or
         ``None`` if neither is reported in it (absent is not zero)."""
         parts = [c.nanos for c in (self.cost, self.aggregated_child_cost) if c is not None and c.currency == currency]
-        return sum(parts) if parts else None
+        return min(sum(parts), MAX_NANOS) if parts else None
 
     def to_dict(self) -> dict:
         d: dict = {}
@@ -297,11 +300,18 @@ class BudgetContext:
         """Read a context; unknown keys are ignored, malformed known ones
         raise :class:`ContextError`."""
         d = _obj(d, "budget context")
-        return cls(
-            BudgetLimit.from_dict(d["budget"]) if d.get("budget") is not None else None,
-            Incurred.from_dict(d["incurred"]) if d.get("incurred") is not None else None,
-            ReservationInfo.from_dict(d["reservation"]) if d.get("reservation") is not None else None,
-        )
+        try:
+            return cls(
+                BudgetLimit.from_dict(d["budget"]) if d.get("budget") is not None else None,
+                Incurred.from_dict(d["incurred"]) if d.get("incurred") is not None else None,
+                ReservationInfo.from_dict(d["reservation"]) if d.get("reservation") is not None else None,
+            )
+        except ContextError:
+            raise
+        except (ValueError, TypeError, OverflowError, RecursionError) as e:
+            # Untrusted input: whatever slipped past a field check is still
+            # a ContextError, never anything else.
+            raise ContextError(f"budget context: {e}") from e
 
     def budget_nanos(self, currency: str = "USD") -> Optional[int]:
         """The money this context allows in ``currency``: ``budget.cost``,
@@ -351,11 +361,29 @@ def incurred_of(budget, *, source: Optional[str] = "local", tokens: Optional[Tok
 class IncurredBooker:
     """Books a remote callee's reported cost on a local budget exactly once,
     even when the report arrives many times (stream updates, a resent final
-    task): ``incurred`` is cumulative, so only the growth is booked."""
+    task): ``incurred`` is cumulative, so only the growth is booked.
 
-    def __init__(self, currency: str = "USD"):
+    ``cap_nanos`` (or :meth:`capped_at`) bounds what the booker will ever
+    book: a callee that reports more than it was given is booked at the cap,
+    and the part above it is kept in :attr:`excess_nanos` so the caller can
+    flag it. Without a cap every reported nano is booked (it is money the
+    callee says it already spent). Amounts saturate at the largest amount
+    the wire format carries, like llm-budget's counters; a report never
+    makes ``book`` raise.
+    """
+
+    def __init__(self, currency: str = "USD", *, cap_nanos: Optional[int] = None):
         self.currency = currency
         self.booked_nanos = 0
+        self.cap_nanos = None if cap_nanos is None else max(0, min(int(cap_nanos), MAX_NANOS))
+        self.excess_nanos = 0
+
+    @classmethod
+    def capped_at(cls, scope, currency: str = "USD") -> "IncurredBooker":
+        """A booker that books at most what ``scope`` holds in its parent
+        (its reservation), or its limit for a root budget."""
+        held = getattr(scope, "_held", None)
+        return cls(currency, cap_nanos=held if held is not None else scope._limit)
 
     def book(self, budget, incurred: Optional[Incurred]):
         """Book the part of ``incurred``'s total not booked yet; returns the
@@ -364,11 +392,16 @@ class IncurredBooker:
         if incurred is None:
             return None
         total = incurred.total_nanos(self.currency)
-        if total is None or total <= self.booked_nanos:
+        if total is None:
+            return None
+        if self.cap_nanos is not None and total > self.cap_nanos:
+            self.excess_nanos = max(self.excess_nanos, total - self.cap_nanos)
+            total = self.cap_nanos
+        if total <= self.booked_nanos:
             return None
         delta = total - self.booked_nanos
         self.booked_nanos = total
-        return budget.charge_force(nanos_to_usd(delta)) if delta else None
+        return budget._charge_force_nanos(delta)
 
 
 __all__ = [
