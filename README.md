@@ -1,5 +1,11 @@
 # agent-budget
 
+[![PyPI](https://img.shields.io/pypi/v/llm-agent-budget.svg)](https://pypi.org/project/llm-agent-budget/)
+[![Python versions](https://img.shields.io/pypi/pyversions/llm-agent-budget.svg)](https://pypi.org/project/llm-agent-budget/)
+[![CI](https://github.com/Mattbusel/agent-budget/actions/workflows/ci.yml/badge.svg)](https://github.com/Mattbusel/agent-budget/actions/workflows/ci.yml)
+[![Typed: mypy --strict](https://img.shields.io/badge/typed-mypy%20--strict-blue.svg)](https://github.com/Mattbusel/agent-budget/blob/main/docs/integrating.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Mattbusel/agent-budget/blob/main/LICENSE)
+
 Hard USD budgets for agents that delegate.
 
 When an orchestrator hands work to several sub-agents at once, each one
