@@ -21,15 +21,15 @@ with `mypy --strict`).
 ## Add it
 
 ```bash
-pip install agent-budget            # no dependencies
-pip install "agent-budget[a2a]"     # plus the a2a-sdk plugins
+pip install llm-agent-budget            # no dependencies
+pip install "llm-agent-budget[a2a]"     # plus the a2a-sdk plugins
 ```
 
 As an optional extra of your own package:
 
 ```toml
 [project.optional-dependencies]
-budget = ["agent-budget>=0.1.2,<0.2"]
+budget = ["llm-agent-budget>=0.1.3,<0.2"]
 ```
 
 and import it lazily where the cap is applied, so users who do not ask for

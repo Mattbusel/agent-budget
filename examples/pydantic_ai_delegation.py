@@ -1,6 +1,6 @@
 """A USD cap across parallel pydantic-ai delegates, offline.
 
-    pip install agent-budget pydantic-ai-slim
+    pip install llm-agent-budget pydantic-ai-slim
     python examples/pydantic_ai_delegation.py
 
 An orchestrator agent delegates research to a sub-agent through a tool, and

@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -e '.[a2a,test]' 'a2a-sdk[http-server]>=1.3,<2'
+      - run: python -m pip install -e '.[a2a,strands,test]' 'a2a-sdk[http-server]>=1.3,<2'
       - run: python -m pytest -q
       - name: examples
         run: |
@@ -58,7 +58,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - run: python -m pip install -e '.[a2a]' mypy types-protobuf
+      - run: python -m pip install -e '.[a2a,strands]' mypy types-protobuf
       - run: python -m mypy --strict src/agent_budget examples/integrate.py
 
   # The golden fixtures must stay byte-identical to llm-budget's copy.

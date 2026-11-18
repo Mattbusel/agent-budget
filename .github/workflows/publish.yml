@@ -1,5 +1,5 @@
 name: publish
-# Publishes agent-budget to PyPI when a tag v<version> is pushed, for example v0.1.0.
+# Publishes llm-agent-budget (import agent_budget) to PyPI when a tag v<version> is pushed, for example v0.1.0.
 # The tag must match the version in pyproject.toml and agent_budget.__version__.
 #
 # Uses PyPI trusted publishing (no API token): on pypi.org, a trusted publisher (a pending
@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment:
       name: pypi
-      url: https://pypi.org/project/agent-budget/
+      url: https://pypi.org/project/llm-agent-budget/
     permissions:
       id-token: write
     steps:

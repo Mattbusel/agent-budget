@@ -1,4 +1,4 @@
-"""Budget propagation for a2a-python (``pip install "agent-budget[a2a]"``).
+"""Budget propagation for a2a-python (``pip install "llm-agent-budget[a2a]"``).
 
 Two plugins for the a2a-sdk plugin system (a2a-sdk 1.3 and later):
 

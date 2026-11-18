@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.3] - 2026-11-17
+
+The first release on PyPI, under the distribution name **llm-agent-budget**
+(`pip install llm-agent-budget`). PyPI refused the name `agent-budget` as too
+similar to an existing project. The import name is unchanged:
+`import agent_budget`. 0.1.2 was tagged on GitHub but never reached PyPI.
+
+### Added
+- `agent_budget.strands` (extra `strands`, strands-agents 1.43 or later): `SpendCeiling`, a Strands plugin that caps what each invocation spends in USD. It reserves each model call's worst case (projected input plus the output-token cap) in `BeforeModelCallEvent`, cancels the call if it does not fit, and settles the reported usage in `AfterModelCallEvent`. An agent with a `SpendCeiling` that runs as a tool of another one gets its `usd` as a child slice of the caller's budget, so sub-agents started in one turn cannot be admitted for more than the caller has left. `budget=` draws every invocation from one shared `Budget`. `Price` prices a Strands `Usage` once per counter whether the provider folds cache tokens into `inputTokens` or reports them on top.
+- `docs/strands.md` and `tests/test_strands.py` (real Strands agents with a scripted model, offline). Four researchers started in one turn under a $0.05 orchestrator: $0.078 without ceilings, $0.0468 with them.
+
 ## [0.1.2] - 2026-11-17
 
 For projects deciding whether to depend on agent-budget. No behavior changes.

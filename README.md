@@ -10,12 +10,9 @@ from the parent before it starts**, every amount it books is booked on the
 parent at the same moment, and the unused part goes back when it finishes.
 
 ```bash
-pip install agent-budget            # no dependencies
-pip install "agent-budget[a2a]"     # plus the a2a-python plugins
+pip install llm-agent-budget            # no dependencies
+pip install "llm-agent-budget[a2a]"     # plus the a2a-python plugins
 ```
-
-Until the first upload reaches PyPI, install from GitHub:
-`pip install "agent-budget[a2a] @ git+https://github.com/Mattbusel/agent-budget"`.
 
 ## Child scopes
 
@@ -93,6 +90,20 @@ with orchestrator.child("remote-researcher", usd=0.30):
 handler = DefaultRequestHandlerV2(..., plugins=plugins.sequential(BudgetExecutionPlugin(max_usd=5.00)))
 # inside AgentExecutor.execute: current_budget().reserve(...).settle(...)
 ```
+
+## Strands Agents
+
+```python
+from strands import Agent
+from agent_budget.strands import Price, SpendCeiling
+
+agent = Agent(tools=[researcher], plugins=[SpendCeiling(usd=0.50, price=Price(input=3.00, output=15.00))])
+```
+
+A Strands plugin (`pip install "llm-agent-budget[strands]"`): each invocation can
+spend at most `usd`, every model call reserves its worst case before it is
+sent, and an agent used as a tool gets its slice from the caller's budget.
+See [docs/strands.md](docs/strands.md).
 
 ## Same format as the Rust crate
 

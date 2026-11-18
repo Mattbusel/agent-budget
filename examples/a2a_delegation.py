@@ -1,6 +1,6 @@
 """An orchestrator delegates to a remote A2A agent with a budget, offline.
 
-    pip install "agent-budget[a2a]" "a2a-sdk[http-server]"
+    pip install "llm-agent-budget[a2a]" "a2a-sdk[http-server]"
     python examples/a2a_delegation.py
 
 The remote agent is served in-process over JSON-RPC. The orchestrator

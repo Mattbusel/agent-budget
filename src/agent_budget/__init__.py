@@ -53,7 +53,7 @@ from .context import (
     outbound,
 )
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     "DEFAULT_MAX_DEPTH",
