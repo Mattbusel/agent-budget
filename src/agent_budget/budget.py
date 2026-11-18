@@ -22,7 +22,7 @@ import contextvars
 import threading
 import warnings
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 from ._money import MAX_NANOS, AmountError, nanos_to_usd, usd_to_nanos
 
@@ -32,7 +32,7 @@ _current: contextvars.ContextVar[Optional["Budget"]] = contextvars.ContextVar("a
 # The ``with`` entries open in this context (thread or asyncio task), innermost
 # last. Kept per context, not on the budget, so one budget can be entered by
 # many tasks and threads at once.
-_entries: contextvars.ContextVar[tuple] = contextvars.ContextVar("agent_budget_entries", default=())
+_entries: contextvars.ContextVar[Tuple[Tuple[Budget, contextvars.Token[Optional[Budget]]], ...]] = contextvars.ContextVar("agent_budget_entries", default=())
 
 
 def current_budget() -> Optional["Budget"]:
@@ -147,7 +147,8 @@ class Budget:
         obj._init(name, limit, parent, depth, parent.max_depth, parent._lock)
         return obj
 
-    def _init(self, name, limit, parent, depth, max_depth, lock) -> None:
+    def _init(self, name: str, limit: int, parent: Optional[Budget], depth: int, max_depth: int,
+              lock: threading.RLock) -> None:
         self.name = name
         self._limit = limit
         self._committed = 0  # spend + open holds
@@ -374,7 +375,7 @@ class Budget:
         _entries.set(_entries.get() + ((self, token),))
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         entries = _entries.get()
         for i in range(len(entries) - 1, -1, -1):
             if entries[i][0] is self:
@@ -431,7 +432,7 @@ class Scope(Budget):
 
     settle = close
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         try:
             self.close()
         finally:
@@ -495,7 +496,7 @@ class Reservation:
     def __enter__(self) -> "Reservation":
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.release()
 
     def __del__(self) -> None:

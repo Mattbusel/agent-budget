@@ -18,7 +18,7 @@ else on bad input.
 
 from __future__ import annotations
 
-from typing import Any, Mapping, MutableMapping, Optional
+from typing import Any, Dict, Mapping, MutableMapping, Optional
 
 from ._money import AmountError, format_nanos, parse_amount, parse_count, parse_currency
 from .context import (
@@ -202,7 +202,7 @@ def _bounded(v: Optional[str], key: str, max_len: int) -> Optional[str]:
 # ── A2A ────────────────────────────────────────────────────────────────────
 
 
-def to_a2a_metadata(ctx: BudgetContext) -> dict:
+def to_a2a_metadata(ctx: BudgetContext) -> Dict[str, Any]:
     """``{EXTENSION_URI: ctx}``, ready to merge into message, task or
     request metadata."""
     return {EXTENSION_URI: ctx.to_dict()}

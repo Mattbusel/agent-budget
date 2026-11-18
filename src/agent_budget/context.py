@@ -24,7 +24,10 @@ The JSON produced here is identical, key for key, to llm-budget's (Rust)
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+if TYPE_CHECKING:
+    from .budget import Budget, Outcome
 
 from ._money import MAX_NANOS, AmountError, format_nanos, nanos_to_usd, parse_amount, parse_count, parse_currency
 
@@ -39,7 +42,7 @@ class ContextError(ValueError):
     """A budget context that cannot be read."""
 
 
-def _obj(v: Any, where: str) -> dict:
+def _obj(v: Any, where: str) -> Dict[str, Any]:
     if not isinstance(v, dict):
         raise ContextError(f"{where} must be an object")
     return v
@@ -70,7 +73,7 @@ class Money:
     def amount(self) -> float:
         return nanos_to_usd(self.nanos)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {"amount": format_nanos(self.nanos), "currency": self.currency}
 
     @classmethod
@@ -96,7 +99,7 @@ class Cost:
     def amount(self) -> float:
         return nanos_to_usd(self.nanos)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         d = {"amount": format_nanos(self.nanos), "currency": self.currency}
         if self.source is not None:
             d["source"] = self.source
@@ -123,7 +126,7 @@ class TokenCounts:
 
     _WIRE = (("input", "input"), ("output", "output"), ("cache_read", "cacheRead"), ("cache_write", "cacheWrite"), ("total", "total"))
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {wire: getattr(self, attr) for attr, wire in self._WIRE if getattr(self, attr) is not None}
 
     @classmethod
@@ -149,7 +152,7 @@ class TokenLimit:
 
     limit: Optional[int] = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {} if self.limit is None else {"limit": self.limit}
 
     @classmethod
@@ -175,8 +178,8 @@ class BudgetLimit:
     def token_limit(self) -> Optional[int]:
         return None if self.tokens is None else self.tokens.limit
 
-    def to_dict(self) -> dict:
-        d: dict = {}
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {}
         if self.cost is not None:
             d["cost"] = self.cost.to_dict()
         if self.tokens is not None:
@@ -211,8 +214,8 @@ class Incurred:
         parts = [c.nanos for c in (self.cost, self.aggregated_child_cost) if c is not None and c.currency == currency]
         return min(sum(parts), MAX_NANOS) if parts else None
 
-    def to_dict(self) -> dict:
-        d: dict = {}
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {}
         if self.cost is not None:
             d["cost"] = self.cost.to_dict()
         if self.aggregated_child_cost is not None:
@@ -257,7 +260,7 @@ class ReservationInfo:
     def amount(self) -> float:
         return nanos_to_usd(self.nanos)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         d = {"id": self.id, "amount": format_nanos(self.nanos), "currency": self.currency}
         if self.expires is not None:
             d["expires"] = self.expires
@@ -285,8 +288,8 @@ class BudgetContext:
     incurred: Optional[Incurred] = None
     reservation: Optional[ReservationInfo] = None
 
-    def to_dict(self) -> dict:
-        d: dict = {}
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {}
         if self.budget is not None:
             d["budget"] = self.budget.to_dict()
         if self.incurred is not None:
@@ -332,7 +335,7 @@ def _new_id() -> str:
     return "rsv_" + secrets.token_hex(16)
 
 
-def outbound(scope, *, deadline: Optional[str] = None, token_limit: Optional[int] = None,
+def outbound(scope: Budget, *, deadline: Optional[str] = None, token_limit: Optional[int] = None,
              expires: Optional[str] = None) -> BudgetContext:
     """The context to send with a delegation made from ``scope`` (usually a
     fresh child scope): ``budget.cost`` is what the scope has left and the
@@ -347,7 +350,7 @@ def outbound(scope, *, deadline: Optional[str] = None, token_limit: Optional[int
     return BudgetContext(budget=budget, reservation=reservation)
 
 
-def incurred_of(budget, *, source: Optional[str] = "local", tokens: Optional[TokenCounts] = None) -> Incurred:
+def incurred_of(budget: Budget, *, source: Optional[str] = "local", tokens: Optional[TokenCounts] = None) -> Incurred:
     """What ``budget`` reports back: its own spend as ``cost``, its
     descendants' as ``aggregatedChildCost`` (only when it delegated), and
     the delegation count."""
@@ -379,13 +382,13 @@ class IncurredBooker:
         self.excess_nanos = 0
 
     @classmethod
-    def capped_at(cls, scope, currency: str = "USD") -> "IncurredBooker":
+    def capped_at(cls, scope: Budget, currency: str = "USD") -> "IncurredBooker":
         """A booker that books at most what ``scope`` holds in its parent
         (its reservation), or its limit for a root budget."""
         held = getattr(scope, "_held", None)
         return cls(currency, cap_nanos=held if held is not None else scope._limit)
 
-    def book(self, budget, incurred: Optional[Incurred]):
+    def book(self, budget: Budget, incurred: Optional[Incurred]) -> Optional[Outcome]:
         """Book the part of ``incurred``'s total not booked yet; returns the
         :class:`~agent_budget.budget.Outcome`, or ``None`` when nothing new
         was reported."""

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
-from typing import Any, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional, Tuple
 
 from google.protobuf import json_format, struct_pb2
 
@@ -46,13 +46,18 @@ from ._money import nanos_to_usd
 from .budget import Budget, Scope, _current, current_budget
 from .context import EXTENSION_URI, BudgetContext, ContextError, IncurredBooker, incurred_of, outbound
 
+if TYPE_CHECKING:
+    from a2a.plugins.types import ClientRequest, ClientResponse
+    from a2a.server.agent_execution.context import RequestContext
+    from a2a.server.events.event_queue import Event
+
 logger = logging.getLogger(__name__)
 
 SEND_METHODS = frozenset({"send_message", "send_message_streaming"})
 _STATE_KEY = "agent_budget.call"
 
 
-def _struct_get(meta: Any) -> Optional[dict]:
+def _struct_get(meta: Any) -> Optional[Dict[str, Any]]:
     """The extension payload in a protobuf ``Struct`` (or a dict), as a dict."""
     if meta is None:
         return None
@@ -181,11 +186,11 @@ class BudgetClientPlugin(ClientPlugin):
         self._per_call_fraction = per_call_fraction
         self._cap_reports = cap_reports
 
-    def _start(self, base: Budget):
+    def _start(self, base: Budget) -> Tuple[_CallState, BudgetContext]:
         state = _open_call(base, self._per_call_usd, self._per_call_fraction, self._cap_reports)
         return state, outbound(state.scope, deadline=self._deadline, token_limit=self._token_limit)
 
-    async def before_client_request(self, request) -> None:
+    async def before_client_request(self, request: ClientRequest) -> None:
         if request.method not in SEND_METHODS:
             return
         base = self._budget or current_budget()
@@ -199,7 +204,7 @@ class BudgetClientPlugin(ClientPlugin):
         context.service_parameters = params
         context.state[_STATE_KEY] = state
 
-    async def after_client_request(self, response) -> None:
+    async def after_client_request(self, response: ClientResponse) -> None:
         state = response.context.state.get(_STATE_KEY) if response.context is not None else None
         if state is None:
             return
@@ -261,7 +266,7 @@ def _foreign_budget(ctx: BudgetContext) -> bool:
 class _Execution:
     __slots__ = ("budget", "token")
 
-    def __init__(self, budget: Budget, token: contextvars.Token):
+    def __init__(self, budget: Budget, token: contextvars.Token[Optional[Budget]]):
         self.budget = budget
         self.token = token
 
@@ -290,7 +295,7 @@ class BudgetExecutionPlugin(ExecutionPlugin):
         self._source = source
         self._runs: dict[int, _Execution] = {}
 
-    def _granted(self, request_context) -> Optional[float]:
+    def _granted(self, request_context: RequestContext) -> Optional[float]:
         ctx = read_context(request_context.metadata)  # SendMessageRequest.metadata
         if ctx is None and request_context.message is not None:
             ctx = read_context(request_context.message.metadata)
@@ -303,7 +308,7 @@ class BudgetExecutionPlugin(ExecutionPlugin):
             usd = min(usd, self._max)
         return usd
 
-    async def before_execution(self, request_context) -> None:
+    async def before_execution(self, request_context: RequestContext) -> None:
         usd = self._granted(request_context)
         if usd is None:
             return
@@ -312,14 +317,14 @@ class BudgetExecutionPlugin(ExecutionPlugin):
         token = _current.set(budget)
         self._runs[id(request_context)] = _Execution(budget, token)
 
-    async def on_execution_event(self, request_context, event) -> None:
+    async def on_execution_event(self, request_context: RequestContext, event: Event) -> None:
         run = self._runs.get(id(request_context))
         if run is None or not hasattr(event, "metadata"):
             return
         report = BudgetContext(incurred=incurred_of(run.budget, source=self._source))
         _set_struct(event.metadata, report)
 
-    async def after_execution(self, request_context, error) -> None:
+    async def after_execution(self, request_context: RequestContext, error: Optional[BaseException]) -> None:
         run = self._runs.pop(id(request_context), None)
         if run is None:
             return
@@ -329,7 +334,7 @@ class BudgetExecutionPlugin(ExecutionPlugin):
             # Reset from another context: the execution task already ended.
             pass
 
-    def budget_for(self, request_context) -> Optional[Budget]:
+    def budget_for(self, request_context: RequestContext) -> Optional[Budget]:
         """The budget of a running execution (also available as
         :func:`~agent_budget.current_budget` inside ``execute``)."""
         run = self._runs.get(id(request_context))

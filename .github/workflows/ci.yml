@@ -23,6 +23,7 @@ jobs:
         run: |
           python examples/fanout.py
           python examples/a2a_delegation.py
+          python examples/integrate.py
       - name: pydantic-ai recipe
         env:
           PYDANTIC_AI_NO_BANNER: '1'
@@ -46,6 +47,19 @@ jobs:
       - run: python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('a2a') is not None)"
       - run: python -m pytest -q
       - run: python examples/fanout.py
+      - run: python examples/integrate.py
+
+  # The package ships py.typed: keep it clean under mypy --strict, with and
+  # without the a2a extra, plus the integration example from the docs.
+  typecheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -e '.[a2a]' mypy types-protobuf
+      - run: python -m mypy --strict src/agent_budget examples/integrate.py
 
   # The golden fixtures must stay byte-identical to llm-budget's copy.
   fixtures:

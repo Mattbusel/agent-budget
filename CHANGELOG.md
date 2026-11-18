@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2] - 2026-11-17
+
+For projects deciding whether to depend on agent-budget. No behavior changes.
+
+### Added
+- `docs/integrating.md`: dependencies (none for the core), supported Python versions, typing, side effects, concurrency, how to make agent-budget an optional extra of your own package, the five-line reserve/settle integration, which entry point fits which stack (any client, sub-agents, pydantic-ai, A2A, baggage, MCP, a Rust service), and the stability policy.
+- `examples/integrate.py`: that integration, runnable; CI runs it on every Python version.
+- CI job `typecheck`: `mypy --strict` over the package (with the `a2a` extra) and the integration example.
+
+### Fixed
+- The package ships `py.typed` but did not pass `mypy --strict` (36 errors): unannotated parameters on the a2a plugins' hooks, `Budget` internals and `outbound` / `incurred_of` / `IncurredBooker`, and bare `dict` / `tuple` / `Token` types. Every public function is now fully annotated, so a strict type checker in a project that uses agent-budget sees real types instead of `Any`.
+
 ## [0.1.1] - 2026-11-17
 
 The first version meant for PyPI; 0.1.0 was never uploaded.

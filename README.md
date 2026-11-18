@@ -101,6 +101,6 @@ scopes and the same contexts. Both test suites read one set of golden
 fixtures (`tests/fixtures/budget_context/`), so a Rust orchestrator and a
 Python agent agree to the last digit.
 
-More: [docs/guide.md](docs/guide.md).
+More: [docs/guide.md](docs/guide.md). Adding it to another project (dependencies, typing, stability, the five-line integration): [docs/integrating.md](docs/integrating.md).
 
 MIT license.
