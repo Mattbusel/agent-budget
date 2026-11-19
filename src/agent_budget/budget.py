@@ -14,6 +14,14 @@ The semantics match llm-budget's (Rust) ``AgentBudget::child``:
 Amounts are kept as whole nano-units, like llm-budget. One lock per budget
 tree makes every operation atomic across threads; nothing awaits, so the
 same objects are safe to use from asyncio tasks.
+
+Fail closed (0.2): a budget needs a hard cap, :meth:`Budget.reserve_for` and
+:meth:`Budget.record_usage` refuse a call they cannot price exactly
+(:mod:`agent_budget.pricing`), and a call that does not fit is refused before
+it is made. ``allow_unpriced=True`` and ``unsafe_soft_limit=True`` are the
+explicit ways out; each issues an
+:class:`~agent_budget.pricing.UnsafeBudgetWarning` on every call it lets
+through.
 """
 
 from __future__ import annotations
@@ -21,10 +29,17 @@ from __future__ import annotations
 import contextvars
 import threading
 import warnings
-from dataclasses import dataclass
-from typing import Optional, Tuple
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, List, Mapping, Optional, Tuple, Union
 
 from ._money import MAX_NANOS, AmountError, nanos_to_usd, usd_to_nanos
+
+if TYPE_CHECKING:  # pragma: no cover
+    import llm_prices
+
+    from .pricing import Pricer
+
+    UsageArg = Union["llm_prices.Usage", Mapping[str, Any]]
 
 DEFAULT_MAX_DEPTH = 8
 
@@ -85,6 +100,31 @@ class DepthExceeded(BudgetError):
 
 
 @dataclass(frozen=True)
+class _Safety:
+    """The fail-closed settings of one budget tree, shared by its scopes."""
+
+    pricer: Optional["Pricer"] = None
+    allow_unpriced: bool = False
+    soft_limit: bool = False
+    events: List[str] = field(default_factory=list, compare=False)
+
+    def get_pricer(self) -> "Pricer":
+        if self.pricer is not None:
+            return self.pricer
+        from .pricing import Pricer
+
+        p = Pricer()
+        object.__setattr__(self, "pricer", p)
+        return p
+
+    def unsafe(self, message: str) -> None:
+        from .pricing import warn_unsafe
+
+        self.events.append(message)
+        warn_unsafe(message, stacklevel=4)
+
+
+@dataclass(frozen=True)
 class Outcome:
     """What a settlement booked."""
 
@@ -123,15 +163,48 @@ class Budget:
     0.07
     >>> round(b.remaining_usd, 9)
     0.93
+
+    Args:
+        limit_usd: The hard cap. Required: ``None``, zero, negative, NaN and
+            infinite caps raise :class:`AmountError`.
+        name: The budget's name in errors and receipts.
+        max_depth: The deepest child scope the tree allows.
+        pricer: Prices for :meth:`reserve_for`, :meth:`record_usage` and
+            :meth:`Reservation.settle_usage`; default
+            :class:`agent_budget.pricing.Pricer` (llm-prices, fail closed).
+        allow_unpriced: **Unsafe.** Let calls to models that cannot be priced
+            through at $0 instead of refusing them, with an
+            :class:`~agent_budget.pricing.UnsafeBudgetWarning` every time.
+        unsafe_soft_limit: **Unsafe.** Admit reservations that do not fit
+            under the cap instead of refusing them, the way a soft limit
+            does, with a warning every time. Kills and closed scopes still
+            refuse; creating a child scope still needs room.
+
+    Child scopes share the pricer and both opt-outs.
     """
 
-    def __init__(self, limit_usd: float, name: str = "root", *, max_depth: int = DEFAULT_MAX_DEPTH):
-        limit = usd_to_nanos(limit_usd)
+    def __init__(
+        self,
+        limit_usd: float,
+        name: str = "root",
+        *,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+        pricer: Optional["Pricer"] = None,
+        allow_unpriced: bool = False,
+        unsafe_soft_limit: bool = False,
+    ):
+        if limit_usd is None or isinstance(limit_usd, bool):
+            raise AmountError("a budget needs a hard cap: limit_usd must be a positive USD amount")
+        try:
+            limit = usd_to_nanos(limit_usd)
+        except AmountError as e:
+            raise AmountError(f"a budget needs a hard cap: {e}") from e
         if limit <= 0:
-            raise AmountError(f"limit must be > 0, got {limit_usd!r}")
+            raise AmountError(f"a budget needs a hard cap: limit must be > 0, got {limit_usd!r}")
         if max_depth < 0:
             raise AmountError(f"max_depth must be >= 0, got {max_depth}")
         self._init(name, limit, None, 0, max_depth, threading.RLock())
+        self._safety = _Safety(pricer=pricer, allow_unpriced=allow_unpriced, soft_limit=unsafe_soft_limit)
 
     @classmethod
     def _empty(cls, name: str) -> "Budget":
@@ -139,12 +212,14 @@ class Budget:
         still books spend that already happened (``charge_force``)."""
         obj = Budget.__new__(Budget)
         obj._init(name, 0, None, 0, DEFAULT_MAX_DEPTH, threading.RLock())
+        obj._safety = _Safety()
         return obj
 
     @classmethod
     def _from_nanos(cls, name: str, limit: int, parent: "Budget", depth: int) -> "Scope":
         obj = Scope.__new__(Scope)
         obj._init(name, limit, parent, depth, parent.max_depth, parent._lock)
+        obj._safety = parent._safety
         return obj
 
     def _init(self, name: str, limit: int, parent: Optional[Budget], depth: int, max_depth: int,
@@ -248,11 +323,44 @@ class Budget:
                 raise BudgetKilled(node.name, node._killed)
             node = node._parent
 
-    def _admit(self, nanos: int) -> None:
+    _safety: _Safety
+
+    def _admit(self, nanos: int, *, soft: bool = False) -> None:
         if self._committed + nanos > self._limit:
-            raise BudgetExhausted(self.name, nanos_to_usd(nanos), nanos_to_usd(max(0, self._limit - self._committed)))
+            if not (soft and self._safety.soft_limit):
+                raise BudgetExhausted(self.name, nanos_to_usd(nanos), nanos_to_usd(max(0, self._limit - self._committed)))
+            self._safety.unsafe(
+                f"budget {self.name!r}: soft limit let a call through over the ${nanos_to_usd(self._limit):.6f} cap "
+                f"(committed ${nanos_to_usd(self._committed + nanos):.6f})"
+            )
         self._committed += nanos
         self._reserved += nanos
+
+    @property
+    def unsafe_events(self) -> int:
+        """How many calls an opt-out (``allow_unpriced``,
+        ``unsafe_soft_limit``) let through in this budget's tree."""
+        return len(self._safety.events)
+
+    @property
+    def pricer(self) -> "Pricer":
+        """The prices this budget's tree uses."""
+        return self._safety.get_pricer()
+
+    def _price_or_unsafe(self, model: str, usage: "UsageArg") -> int:
+        """The nano-dollar cost of ``usage`` on ``model``, or 0 with a warning
+        when it cannot be priced and the tree allows unpriced calls."""
+        from .pricing import PriceError, StalePrice
+
+        try:
+            return usd_to_nanos(self.pricer.cost(model, usage))
+        except StalePrice:
+            raise
+        except PriceError as e:
+            if not self._safety.allow_unpriced:
+                raise
+            self._safety.unsafe(f"budget {self.name!r}: {e}; let through at $0")
+            return 0
 
     def reserve(self, estimate_usd: float) -> "Reservation":
         """Hold ``estimate_usd`` for a call about to be made.
@@ -263,8 +371,42 @@ class Budget:
         nanos = usd_to_nanos(estimate_usd)
         with self._lock:
             self._check_alive()
-            self._admit(nanos)
+            self._admit(nanos, soft=True)
         return Reservation(self, nanos)
+
+    def reserve_for(self, model: str, estimate: "UsageArg") -> "Reservation":
+        """Hold what a call to ``model`` of size ``estimate`` (prompt tokens
+        plus the output you allow, as a provider usage block or
+        :class:`llm_prices.Usage`) costs at this budget's prices. Settle it
+        with :meth:`Reservation.settle_usage`.
+
+        >>> b = Budget(0.10)
+        >>> hold = b.reserve_for("gpt-4o", {"prompt_tokens": 8000, "completion_tokens": 1000})
+        >>> round(hold.estimate_usd, 6)
+        0.03
+        >>> _ = hold.settle_usage("gpt-4o", {"prompt_tokens": 7412, "completion_tokens": 230})
+        >>> b.reserve_for("gtp-4o", {"prompt_tokens": 10, "completion_tokens": 1})
+        Traceback (most recent call last):
+        ...
+        agent_budget.pricing.UnknownModel: no price known for model 'gtp-4o'; refusing to guess
+
+        Raises a :class:`~agent_budget.pricing.PriceError` when the call
+        cannot be priced (unless ``allow_unpriced``), and otherwise what
+        :meth:`reserve` raises.
+        """
+        nanos = self._price_or_unsafe(model, estimate)
+        hold = self.reserve(nanos_to_usd(nanos))
+        hold._model = model
+        return hold
+
+    def record_usage(self, model: str, usage: "UsageArg") -> Outcome:
+        """Book a finished call from its reported usage, priced at this
+        budget's prices, even past the cap (the money is spent).
+
+        Raises a :class:`~agent_budget.pricing.PriceError` (booking nothing)
+        when the call cannot be priced, unless ``allow_unpriced``.
+        """
+        return self._charge_force_nanos(self._price_or_unsafe(model, usage))
 
     def child(
         self,
@@ -298,7 +440,7 @@ class Budget:
                 nanos = int(max(0, self._limit - self._committed) * f)
                 if nanos <= 0:
                     raise BudgetExhausted(self.name, 0.0, nanos_to_usd(max(0, self._limit - self._committed)))
-            self._admit(nanos)
+            self._admit(nanos, soft=False)
             self._delegations += 1
             scope = Budget._from_nanos(name, nanos, self, depth)
             scope._hold = nanos
@@ -462,12 +604,13 @@ class Reservation:
     garbage-collected unsettled is also released, when the collector gets to
     it."""
 
-    __slots__ = ("_budget", "_nanos", "_open")
+    __slots__ = ("_budget", "_nanos", "_open", "_model")
 
     def __init__(self, budget: Budget, nanos: int):
         self._budget = budget
         self._nanos = nanos
         self._open = True
+        self._model: Optional[str] = None
 
     @property
     def estimate_usd(self) -> float:
@@ -484,6 +627,27 @@ class Reservation:
             self._open = False
             b._book(self._nanos, nanos)
             return b._outcome(nanos)
+
+    def settle_usage(self, model: str, usage: "UsageArg") -> Outcome:
+        """Release the hold and book what ``usage`` on ``model`` costs at the
+        budget's prices, even past the cap.
+
+        The call has happened, so this never books less than is known: if
+        ``model`` cannot be priced (a dated id the provider echoes back, say),
+        the model given to :meth:`Budget.reserve_for` is tried, and failing
+        that the held amount is booked, never $0.
+        """
+        from .pricing import PriceError
+
+        pricer = self._budget.pricer
+        for m in (model, self._model):
+            if m is None:
+                continue
+            try:
+                return self.settle(pricer.cost(m, usage))
+            except PriceError:
+                continue
+        return self.settle(self.estimate_usd)
 
     def release(self) -> None:
         """Release the hold without booking anything (idempotent)."""

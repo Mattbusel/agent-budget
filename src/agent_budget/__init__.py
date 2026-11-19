@@ -9,6 +9,10 @@
   metadata, W3C baggage and MCP ``_meta`` (:mod:`agent_budget.carriers`).
 * ``agent_budget.a2a_plugin``: a2a-python client and execution plugins
   (install the ``a2a`` extra).
+* Fail closed (0.2): :meth:`Budget.reserve_for` / :meth:`Budget.record_usage`
+  price calls from llm-prices and refuse what they cannot price exactly
+  (:mod:`agent_budget.pricing`); ``agent-budget audit`` shows what a soft
+  limit would have let past your cap (:mod:`agent_budget.audit`).
 
 Same semantics and wire format as the Rust crate llm-budget (0.8+).
 """
@@ -27,6 +31,17 @@ from .budget import (
     ScopeClosed,
     ScopeReceipt,
     current_budget,
+)
+from .pricing import (
+    DEFAULT_MAX_PRICE_AGE_DAYS,
+    CachePriceMissing,
+    PriceError,
+    Pricer,
+    StalePrice,
+    UnknownModel,
+    Unpriced,
+    UnsafeBudgetWarning,
+    usage_from,
 )
 from .carriers import (
     extract_mcp_meta,
@@ -53,10 +68,19 @@ from .context import (
     outbound,
 )
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 __all__ = [
     "DEFAULT_MAX_DEPTH",
+    "DEFAULT_MAX_PRICE_AGE_DAYS",
+    "CachePriceMissing",
+    "PriceError",
+    "Pricer",
+    "StalePrice",
+    "UnknownModel",
+    "Unpriced",
+    "UnsafeBudgetWarning",
+    "usage_from",
     "EXTENSION_URI",
     "AmountError",
     "Budget",

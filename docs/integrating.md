@@ -11,9 +11,9 @@ with `mypy --strict`).
 |---|---|
 | License | MIT ([LICENSE](../LICENSE)) |
 | Python | 3.9+ for the core, 3.10+ for the `a2a` extra (a2a-sdk's own minimum). Tested on 3.9 to 3.13 in CI. |
-| Dependencies | None. The core is pure Python, standard library only. `a2a` extra: a2a-sdk 1.3+. |
+| Dependencies | One: [llm-prices](https://pypi.org/project/llm-prices/) 1.8+ (pure Python, no dependencies of its own), the dated price table. `a2a` extra: a2a-sdk 1.3+. |
 | Typing | Ships `py.typed`; the package passes `mypy --strict` in CI. |
-| Side effects | No network, no files, no threads, no global state beyond a `contextvars` variable for `current_budget()`. Nothing happens at import. |
+| Side effects | No network, no files, no threads, no global state beyond a `contextvars` variable for `current_budget()` and an "always" warnings filter for `UnsafeBudgetWarning` (so opt-outs stay loud). |
 | Concurrency | One lock per budget tree; safe from threads and asyncio tasks. One budget can be entered by many tasks at once. |
 | Money | Exact integer nano-dollars inside, never float accumulation. |
 | Maintainer | Matthew Busel ([Tensorust LLC](https://tensorust.com/open-source/)). Issues and PRs on [GitHub](https://github.com/Mattbusel/agent-budget). |
@@ -21,7 +21,7 @@ with `mypy --strict`).
 ## Add it
 
 ```bash
-pip install llm-agent-budget            # no dependencies
+pip install llm-agent-budget            # depends on llm-prices only
 pip install "llm-agent-budget[a2a]"     # plus the a2a-sdk plugins
 ```
 
@@ -29,11 +29,22 @@ As an optional extra of your own package:
 
 ```toml
 [project.optional-dependencies]
-budget = ["llm-agent-budget>=0.1.3,<0.2"]
+budget = ["llm-agent-budget>=0.2,<0.3"]
 ```
 
 and import it lazily where the cap is applied, so users who do not ask for
 budgets never import it.
+
+## Fail closed
+
+Since 0.2, `Budget.reserve_for(model, usage)` / `Reservation.settle_usage` /
+`Budget.record_usage` price calls from llm-prices and refuse what they cannot
+price exactly: `UnknownModel`, `CachePriceMissing`, `StalePrice` (older than
+90 days), `Unpriced`, all `PriceError(BudgetError)`. A budget needs a hard
+cap. The opt-outs (`allow_unpriced=True`, `unsafe_soft_limit=True`,
+`Pricer(allow_stale=True)`) issue an `UnsafeBudgetWarning` on every call they
+let through. `agent-budget audit calls.jsonl --cap 5` shows what a soft
+limit would have let past a cap on a log of real calls.
 
 ## The five-line integration
 
@@ -77,7 +88,7 @@ with budget.reserve(0.01) as hold:                 # raises BudgetExhausted if i
   private.
 - While the version is 0.x, a breaking change bumps the minor version (0.1
   to 0.2) and is listed in [CHANGELOG.md](../CHANGELOG.md). Patch releases do
-  not break working code, so `>=0.1.2,<0.2` is a safe pin.
+  not break working code, so `>=0.2,<0.3` is a safe pin.
 - The wire format (`BudgetContext` JSON, baggage keys, the A2A extension
   URI) follows the A2A budget extension draft (a2aproject/A2A#2121). A change
   to it is a minor release, made in step with llm-budget.

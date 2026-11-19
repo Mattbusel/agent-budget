@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.0] - 2026-11-19
+
+**Fail closed by default.** A budget that guesses a price is not a cap. Cost trackers keep shipping the same guesses: an unknown model priced at $0 or a placeholder (in PraisonAI every newer model was billed at a $1/$3 default, under a fifth of a real gpt-5.5 call, so `max_budget=1.0` let about $3.42 through; PraisonAI #6433), cached tokens billed as plain input, and a price table nobody updates. 0.2 refuses each of these instead of guessing, and every way out is explicit and warns on every call it lets through. Same semantics as llm-budget 0.10 (Rust).
+
+Breaking: `strands.Price.cost` raises on cache tokens without a cache price, `Budget(None)` and non-finite caps raise, and the package now depends on llm-prices.
+
+### Added
+- `agent_budget.pricing`: `Pricer` prices calls from [llm-prices](https://pypi.org/project/llm-prices/) and refuses every guess: `UnknownModel` (no source lists the model), `CachePriceMissing` (cache reads or writes on a price with no cache rate; llm-prices itself bills them as plain input), `StalePrice` (a price last checked more than `max_price_age_days`, default 90, ago; the message says `pip install -U llm-prices`), `Unpriced` (listed without a price the call needs). All subclass `PriceError(BudgetError)`. `usage_from` normalizes OpenAI (Chat Completions and Responses), Anthropic (5m and 1h cache writes) and Gemini usage blocks. `Pricer(prices={...})` for your own rates, `today=` for replays, `worst_case(model, input, output)`.
+- `Budget.reserve_for(model, usage)`, `Reservation.settle_usage(model, usage)` and `Budget.record_usage(model, usage)`: model calls priced at the budget's `pricer`. A settlement that cannot be priced books the hold (trying the reserved model first), never $0.
+- Loud opt-outs: `Budget(..., allow_unpriced=True)` (let unpriced calls through at $0) and `Budget(..., unsafe_soft_limit=True)` (admit reservations over the cap; kills and closed scopes still refuse, child scopes still need room), `Pricer(allow_stale=True)`. Each issues an `UnsafeBudgetWarning` on every call it lets through (the package registers an "always" filter for that category, so the default warnings setup does not deduplicate them) and logs it to the `agent_budget` logger. `Budget.unsafe_events` counts them per tree; child scopes share the settings.
+- **`agent-budget audit`** (also `python -m agent_budget audit`): replays a JSON-lines log of calls under a soft limit and under a fail-closed hard cap, and reports the true cost of what the soft limit let through, the call at which real spend crossed the cap, the money past it, booked-versus-true drift per model, and every model with no usable price. Exit status 2 when money got past the cap, `--json`, `--max-price-age`, `--today`. Library API `agent_budget.audit.replay`. Same report as `llm-budget audit`.
+- Tests: `tests/test_fail_closed.py`, `tests/test_audit.py`.
+
+### Changed (breaking)
+- `Budget(limit_usd)` requires a hard cap: `None`, booleans, NaN and infinity raise `AmountError` ("a budget needs a hard cap").
+- `strands.Price` no longer bills cache tokens at the input price when its cache price is `None`: `cost` raises `CachePriceMissing`. `SpendCeiling(price=...)` is optional: by default each model call is priced from llm-prices by the model's id (`Price.from_llm_prices`), fail closed, so an unknown, stale or unpriced model cancels the call before it is sent.
+- `SpendCeiling` books the full hold for a model call that returned no usage or could not be priced (it used to release the hold, booking $0 for a call that happened). A call that raised is still released.
+- New dependency: `llm-prices>=1.8,<2` (no dependencies of its own).
+
 ## [0.1.3] - 2026-11-17
 
 The first release on PyPI, under the distribution name **llm-agent-budget**

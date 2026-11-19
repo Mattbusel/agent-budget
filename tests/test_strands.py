@@ -10,6 +10,7 @@ from strands import Agent, tool  # noqa: E402
 from strands.models import Model  # noqa: E402
 
 from agent_budget import Budget  # noqa: E402
+from agent_budget.pricing import CachePriceMissing  # noqa: E402
 from agent_budget.strands import Price, SpendCeiling  # noqa: E402
 
 # 100 input + 500 output tokens at $3 / $15 per million: $0.0078 per call.
@@ -184,7 +185,13 @@ def test_price_cost_handles_both_cache_conventions():
     expected = (100 * 3.0 + 10 * 15.0 + 1000 * 0.3 + 200 * 3.75) / 1e6
     assert price.cost(separate) == pytest.approx(expected)
     assert price.cost(folded) == pytest.approx(expected)
-    assert Price(input=3.0, output=15.0).cost(separate) == pytest.approx((1300 * 3.0 + 150.0) / 1e6)
+    # No cache prices: cache tokens are refused, not billed as plain input.
+    with pytest.raises(CachePriceMissing):
+        Price(input=3.0, output=15.0).cost(separate)
+    with pytest.raises(CachePriceMissing):
+        Price(input=3.0, output=15.0, cache_read=0.3).cost(separate)
+    assert Price(input=3.0, output=15.0).cost({"inputTokens": 100, "outputTokens": 10}) == pytest.approx(
+        (100 * 3.0 + 10 * 15.0) / 1e6)
 
 
 def test_usd_must_be_positive():

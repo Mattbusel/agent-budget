@@ -14,14 +14,18 @@ pip install "llm-agent-budget[strands]"     # strands-agents 1.43 or later
 from strands import Agent
 from agent_budget.strands import Price, SpendCeiling
 
-# USD per million tokens. Cache prices default to the input price.
-sonnet = Price(input=3.00, output=15.00, cache_read=0.30, cache_write=3.75)
-
+# Priced from llm-prices by the model's id; fail closed (unknown, stale or
+# unpriced models cancel the call before it is sent).
 agent = Agent(
     tools=[...],
-    plugins=[SpendCeiling(usd=0.50, price=sonnet)],
+    plugins=[SpendCeiling(usd=0.50)],
 )
 agent("Research the topic and write a summary.")
+
+# Or your own rates, USD per million tokens. Cache prices are explicit: a call
+# with cache tokens and no cache price raises CachePriceMissing.
+sonnet = Price(input=3.00, output=15.00, cache_read=0.30, cache_write=3.75)
+SpendCeiling(usd=0.50, price=sonnet)
 ```
 
 Every invocation of `agent` can spend at most $0.50. Before each model call the

@@ -9,9 +9,13 @@ and the agent stops with a message saying why::
     from strands import Agent
     from agent_budget.strands import Price, SpendCeiling
 
-    sonnet = Price(input=3.00, output=15.00, cache_read=0.30, cache_write=3.75)  # USD per 1M tokens
-    researcher = Agent(name="researcher", plugins=[SpendCeiling(usd=0.25, price=sonnet)])
-    orchestrator = Agent(tools=[researcher], plugins=[SpendCeiling(usd=1.00, price=sonnet)])
+    # Prices from llm-prices by the model's id, fail closed:
+    researcher = Agent(name="researcher", plugins=[SpendCeiling(usd=0.25)])
+    orchestrator = Agent(tools=[researcher], plugins=[SpendCeiling(usd=1.00)])
+
+    # Or your own (USD per 1M tokens; cache rates are needed if the model caches):
+    sonnet = Price(input=3.00, output=15.00, cache_read=0.30, cache_write=3.75)
+    SpendCeiling(usd=0.25, price=sonnet)
 
 When an agent with a ``SpendCeiling`` runs as a tool of another agent with one
 (``tools=[agent]`` or ``agent.as_tool()``), its ``usd`` is reserved from the
@@ -21,6 +25,11 @@ the same turn can never be admitted for more than the caller has left.
 
 Pass ``budget=`` (an :class:`agent_budget.Budget`) to draw every invocation from
 one shared budget, for example one ceiling for a whole service.
+
+Fail closed (0.2): a model call with no price, or with cache tokens and no
+cache price, is cancelled before it is sent; a price checked more than 90
+days ago is refused (:mod:`agent_budget.pricing`); and a call that returns no
+usage is booked at its full hold, never at $0.
 """
 
 from __future__ import annotations
@@ -41,6 +50,7 @@ from strands.hooks import (
 from strands.plugins import Plugin, hook
 
 from .budget import Budget, BudgetError, Reservation, Scope
+from .pricing import CachePriceMissing, PriceError, Pricer
 
 __all__ = ["Price", "SpendCeiling"]
 
@@ -49,12 +59,20 @@ DEFAULT_OUTPUT_TOKENS = 4096
 
 @dataclass(frozen=True)
 class Price:
-    """Model prices in USD per million tokens. Cache prices default to the input price."""
+    """Model prices in USD per million tokens.
+
+    Cache prices are explicit: :meth:`cost` raises
+    :class:`~agent_budget.pricing.CachePriceMissing` for a call with cache
+    tokens when the matching cache price is ``None``, instead of billing them
+    as plain input (before 0.2 they were).
+    """
 
     input: float
     output: float
     cache_read: Optional[float] = None
     cache_write: Optional[float] = None
+    model: Optional[str] = None
+    """The model id, for error messages."""
 
     def cost(self, usage: Mapping[str, Any]) -> float:
         """USD cost of one Strands ``Usage``.
@@ -69,9 +87,29 @@ class Price:
         write = int(usage.get("cacheWriteInputTokens", 0))
         if inp + out == int(usage.get("totalTokens", inp + out)):
             inp = max(0, inp - read - write)
-        cr = self.input if self.cache_read is None else self.cache_read
-        cw = self.input if self.cache_write is None else self.cache_write
+        if read and self.cache_read is None:
+            raise CachePriceMissing(self.model or "?", "read")
+        if write and self.cache_write is None:
+            raise CachePriceMissing(self.model or "?", "write")
+        cr = self.cache_read or 0.0
+        cw = self.cache_write or 0.0
         return (inp * self.input + out * self.output + read * cr + write * cw) / 1e6
+
+    @classmethod
+    def from_llm_prices(cls, model: str, pricer: Optional[Pricer] = None) -> "Price":
+        """The llm-prices price of ``model`` (its 5-minute cache write when it
+        lists several lifetimes). Raises
+        :class:`~agent_budget.pricing.UnknownModel`,
+        :class:`~agent_budget.pricing.StalePrice` or
+        :class:`~agent_budget.pricing.Unpriced`."""
+        from .pricing import Unpriced
+
+        p = (pricer or Pricer()).price(model)
+        if p.input is None or p.output is None:
+            raise Unpriced(model, "no input/output price listed")
+        writes = dict(p.cache_write)
+        write = writes.get("5m", next(iter(writes.values()), None))
+        return cls(input=p.input, output=p.output, cache_read=p.cache_read, cache_write=write, model=model)
 
     def worst_case(self, input_tokens: int, output_tokens: int) -> float:
         """The most a call with this prompt and output cap can cost."""
@@ -99,8 +137,10 @@ class SpendCeiling(Plugin):
     Args:
         usd: The most one invocation may spend, its sub-agents included.
         price: A :class:`Price`, a mapping of model id to :class:`Price`, or a
-            callable from model id to :class:`Price`. A model call with no price
-            is cancelled, so an unpriced model cannot spend past the ceiling.
+            callable from model id to :class:`Price`. Default: llm-prices by the
+            model's id (:meth:`Price.from_llm_prices`, with ``budget``'s
+            pricer when given). A model call with no price is cancelled, so an
+            unpriced model cannot spend past the ceiling.
         budget: Draw each invocation's ``usd`` from this budget instead of
             starting a fresh one, so all invocations together stay within it.
             Ignored when the agent runs as a tool of an agent with a ``SpendCeiling``.
@@ -114,7 +154,7 @@ class SpendCeiling(Plugin):
         self,
         usd: float,
         *,
-        price: PriceSpec,
+        price: Optional[PriceSpec] = None,
         budget: Optional[Budget] = None,
         max_output_tokens: Optional[int] = None,
     ) -> None:
@@ -166,7 +206,11 @@ class SpendCeiling(Plugin):
         if run is None:
             return
         model_id, max_out = _model_limits(event.agent)
-        price = self._price_for(model_id)
+        try:
+            price = self._price_for(model_id)
+        except PriceError as err:
+            event.cancel = f"spend ceiling: {err}"
+            return
         if price is None:
             event.cancel = f"spend ceiling: no price for model {model_id!r}"
             return
@@ -182,12 +226,19 @@ class SpendCeiling(Plugin):
         if run is None or run.hold is None:
             return
         hold, run.hold = run.hold, None
-        usage = _usage_of(event)
-        price = self._price_for(_model_limits(event.agent)[0])
-        if usage is None or price is None:
-            hold.release()
+        if event.exception is not None:
+            hold.release()  # the call failed: nothing was generated
             return
-        hold.settle(price.cost(usage))
+        usage = _usage_of(event)
+        try:
+            price = self._price_for(_model_limits(event.agent)[0])
+            if usage is None or price is None:
+                raise LookupError("no usage reported")
+            hold.settle(price.cost(usage))
+        except (PriceError, LookupError):
+            # The call happened and its cost is not known: book the full hold,
+            # never $0.
+            hold.settle(hold.estimate_usd)
 
     # ── agents used as tools: their budget is a slice of the caller's ────
     @hook  # type: ignore[call-overload]  # strands types hook() for functions, not methods
@@ -211,6 +262,11 @@ class SpendCeiling(Plugin):
                 _callers.pop(sub, None)
 
     def _price_for(self, model_id: Optional[str]) -> Optional[Price]:
+        if self._price is None:
+            if not model_id:
+                return None
+            pricer = self.budget.pricer if self.budget is not None else None
+            return Price.from_llm_prices(model_id, pricer)
         if isinstance(self._price, Price):
             return self._price
         if isinstance(self._price, Mapping):

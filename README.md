@@ -9,9 +9,53 @@
 When an orchestrator hands work to several sub-agents at once, each one checks the same "remaining" figure, none of them sees the others, and together they spend a multiple of what was left. The protocols they talk over have no place to say how much a delegated task may spend. The open A2A proposal for one puts it plainly: "There's no way to tell a downstream agent 'you have $0.50 remaining.'" ([a2aproject/A2A #2121](https://github.com/a2aproject/A2A/issues/2121)). agent-budget reserves each sub-agent's slice from the parent **before it starts**, books every amount on the parent as it happens, and returns the unused part when it finishes.
 
 ```bash
-pip install llm-agent-budget            # no dependencies
+pip install llm-agent-budget            # one dependency: llm-prices (no dependencies of its own)
 pip install "llm-agent-budget[a2a]"     # plus the a2a-python plugins
 ```
+
+## Fail closed, on purpose
+
+A soft limit records the overspend after it has happened. Since 0.2 agent-budget refuses every call it cannot price exactly:
+
+| What other trackers do | What agent-budget does | Loud opt-out (warns on every call) |
+|---|---|---|
+| Unknown model priced at $0 or a $1/$3 default | `UnknownModel`, call refused | `Budget(..., allow_unpriced=True)` |
+| Cached tokens billed as plain input | `CachePriceMissing` unless the cache rate is listed | `allow_unpriced=True` |
+| Price table pasted into code, never updated | `StalePrice` once a price is 90 days old | `Pricer(allow_stale=True)`, `max_price_age_days=` |
+| Check spend, make the call, book it after | refused before the call is made | `Budget(..., unsafe_soft_limit=True)` |
+| A budget with no cap | `Budget(None)` raises | none |
+
+```python
+from agent_budget import Budget
+
+b = Budget(0.10)
+hold = b.reserve_for("gpt-4o", {"prompt_tokens": 8_000, "completion_tokens": 1_000})  # $0.03 held
+# ... the call, with any client ...
+hold.settle_usage("gpt-4o", response.usage)   # OpenAI, Anthropic or Gemini usage, cache tokens included
+b.reserve_for("gtp-4o", ...)                  # UnknownModel: refused, not booked at $0
+```
+
+Prices come from [llm-prices](https://pypi.org/project/llm-prices/): every row cites the provider's page and the date it was checked. The opt-outs issue an `UnsafeBudgetWarning` on every call they let through (never deduplicated), and log it to the `agent_budget` logger.
+
+## How much would a soft limit have let through?
+
+```bash
+agent-budget audit calls.jsonl --cap 1      # or: python -m agent_budget audit ...
+```
+
+One JSON object per line: `model`, the provider's `usage` block, and optionally `booked_usd` (what your tracker booked). On twelve gpt-5.5 calls booked at a $1/$3 default (the [PraisonAI](https://github.com/MervinPraison/PraisonAI/pull/6433) pattern):
+
+```text
+Soft limit (checks spend before each call, books after, $0 for unpriced models):
+  stopped the run at call 10, after letting 9 calls through
+  tracker booked $1.0350; those calls really cost $5.8500
+  MONEY PAST THE CAP: $4.8500 (5.85x the cap); real spend crossed $1.00 at call 2, then 7 more calls ran
+
+Hard cap, fail closed (agent-budget default):
+  admitted 1 calls, spent $0.6500 of $1.00
+```
+
+Exit status 2 when money got past the cap (a CI gate), `--json` for machines. Same report as the Rust crate's `llm-budget audit`.
 
 ## Child scopes
 
