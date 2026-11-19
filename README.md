@@ -1,4 +1,4 @@
-# agent-budget
+# agent-budget: sub-agents spend money their parent no longer has
 
 [![PyPI](https://img.shields.io/pypi/v/llm-agent-budget.svg)](https://pypi.org/project/llm-agent-budget/)
 [![Python versions](https://img.shields.io/pypi/pyversions/llm-agent-budget.svg)](https://pypi.org/project/llm-agent-budget/)
@@ -6,14 +6,7 @@
 [![Typed: mypy --strict](https://img.shields.io/badge/typed-mypy%20--strict-blue.svg)](https://github.com/Mattbusel/agent-budget/blob/main/docs/integrating.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Mattbusel/agent-budget/blob/main/LICENSE)
 
-Hard USD budgets for agents that delegate.
-
-When an orchestrator hands work to several sub-agents at once, each one
-checks its spending against the same "remaining" figure, none of them sees
-the others, and together they spend a multiple of what was left. agent-budget
-fixes that at the delegation boundary: each sub-agent's slice is **reserved
-from the parent before it starts**, every amount it books is booked on the
-parent at the same moment, and the unused part goes back when it finishes.
+When an orchestrator hands work to several sub-agents at once, each one checks the same "remaining" figure, none of them sees the others, and together they spend a multiple of what was left. The protocols they talk over have no place to say how much a delegated task may spend. The open A2A proposal for one puts it plainly: "There's no way to tell a downstream agent 'you have $0.50 remaining.'" ([a2aproject/A2A #2121](https://github.com/a2aproject/A2A/issues/2121)). agent-budget reserves each sub-agent's slice from the parent **before it starts**, books every amount on the parent as it happens, and returns the unused part when it finishes.
 
 ```bash
 pip install llm-agent-budget            # no dependencies
